@@ -29,6 +29,9 @@
 
 #include "parse.h"
 
+// Our imports and definitions
+#include <errno.h>
+
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
@@ -38,7 +41,39 @@ int main(void)
   for (;;)
   {
     char *line;
+    /* 
+     From the man7 docs:
+     readline returns the text of the line read.  A blank line returns 
+     the empty string.  If EOF is encountered while reading a line, and 
+     the line is empty, readline returns NULL.  If an EOF is read with 
+     a non-empty line, it is treated as a newline.
+     
+     To handle Ctrl+D properly we have to check if the return value is NULL.
+    */
     line = readline("> ");
+    if (line == NULL) {
+      // If we get EOF (NULL) we are only supposed to exit according to the README.md
+      // TODO: We have to check if that is enough, since this might leave some orphan processes.
+
+      /*  
+       From exit(3) docs:
+
+       Signals sent to other processes
+       If the exiting process is a session leader and its controlling
+       terminal is the controlling terminal of the session, then each
+       process in the foreground process group of this controlling
+       terminal is sent a SIGHUP signal, and the terminal is
+       disassociated from this session, allowing it to be acquired by a
+       new controlling process.
+
+       If the exit of the process causes a process group to become
+       orphaned, and if any member of the newly orphaned process group is
+       stopped, then a SIGHUP signal followed by a SIGCONT signal will be
+       sent to each process in this process group.  See setpgid(2) for an
+       explanation of orphaned process groups.
+      */
+      exit(EXIT_SUCCESS);
+    }
 
     // Remove leading and trailing whitespace from the line
     stripwhite(line);
@@ -53,6 +88,13 @@ int main(void)
       {
         // Just prints cmd
         print_cmd(&cmd);
+        int pid = fork();
+        if (pid == 0) {
+            execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
+            fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0], strerror(errno));
+        } else {
+            wait(&pid);
+        }
       }
       else
       {
