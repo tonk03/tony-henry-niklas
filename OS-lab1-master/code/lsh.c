@@ -9,26 +9,28 @@
  * Add appropriate comments in your code to make it
  * easier for us while grading your assignment.
  *
- * Using assert statements in your code is a great way to catch errors early and make debugging easier.
- * Think of them as mini self-checks that ensure your program behaves as expected.
- * By setting up these guardrails, you're creating a more robust and maintainable solution.
- * So go ahead, sprinkle some asserts in your code; they're your friends in disguise!
+ * Using assert statements in your code is a great way to catch errors early and
+ * make debugging easier. Think of them as mini self-checks that ensure your
+ * program behaves as expected. By setting up these guardrails, you're creating
+ * a more robust and maintainable solution. So go ahead, sprinkle some asserts
+ * in your code; they're your friends in disguise!
  *
  * All the best!
  */
 #include <assert.h>
 #include <ctype.h>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <readline/readline.h>
-#include <readline/history.h>
 
-// The <unistd.h> header is your gateway to the OS's process management facilities.
-#include <sys/signal.h>
-#include <unistd.h>
+// The <unistd.h> header is your gateway to the OS's process management
+// facilities.
 #include "parse.h"
 #include <errno.h>
+#include <sys/signal.h>
+#include <unistd.h>
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
@@ -39,8 +41,7 @@ static pid_t foreground_pgid = 0;
 static int shell_terminal;
 static pid_t shell_pgid;
 
-int main(void)
-{
+int main(void) {
   // TODO: Understand
   shell_terminal = STDIN_FILENO;
   // Get out current PID to set it to a new process group later
@@ -64,30 +65,32 @@ int main(void)
        SIGTTOU signal. If the calling thread is blocking SIGTTOU signals
        or the process is ignoring SIGTTOU signals, the process shall be
        allowed to perform the operation, and no signal is sent.
-   * Since we put our shell to the background once we put the child process group
-   * to the foreground we have to ignore the signal once the shell background 
+   * Since we put our shell to the background once we put the child process
+   group
+   * to the foreground we have to ignore the signal once the shell background
    * process is trying to get back its control.
    */
   signal(SIGTTOU, SIG_IGN);
 
-  for (;;)
-  {
+  for (;;) {
     char *line;
-    /* 
+    /*
      From the man7 docs:
-     readline returns the text of the line read.  A blank line returns 
-     the empty string.  If EOF is encountered while reading a line, and 
-     the line is empty, readline returns NULL.  If an EOF is read with 
+     readline returns the text of the line read.  A blank line returns
+     the empty string.  If EOF is encountered while reading a line, and
+     the line is empty, readline returns NULL.  If an EOF is read with
      a non-empty line, it is treated as a newline.
-     
+
      To handle Ctrl+D properly we have to check if the return value is NULL.
     */
     line = readline("> ");
     if (line == NULL) {
-      // If we get EOF (NULL) we are only supposed to exit according to the README.md
-      // TODO: We have to check if that is enough, since this might leave some orphan processes.
+      // If we get EOF (NULL) we are only supposed to exit according to the
+      // README.md
+      // TODO: We have to check if that is enough, since this might leave some
+      // orphan processes.
 
-      /*  
+      /*
        From exit(3) docs:
 
        Signals sent to other processes
@@ -111,61 +114,60 @@ int main(void)
     stripwhite(line);
 
     // If stripped line not blank
-    if (*line)
-    {
+    if (*line) {
       add_history(line);
 
       Command cmd;
-      if (parse(line, &cmd) == 1)
-      {
+      if (parse(line, &cmd) == 1) {
         int pid = fork();
         if (pid == 0) {
-            pid_t child_pid = getpid();
-            /* Create a own process group for the child. This can be one command
-             * or an entire chain of commands. This way we can cancel an entire 
-             * chain at once with ctrl+c
-             */
-            setpgid(child_pid, child_pid);
+          pid_t child_pid = getpid();
+          /* Create a own process group for the child. This can be one command
+           * or an entire chain of commands. This way we can cancel an entire
+           * chain at once with ctrl+c
+           */
+          setpgid(child_pid, child_pid);
 
-            // Give terminal control to child if foreground
-            if (!cmd.background) {
-                tcsetpgrp(shell_terminal, child_pid);
-            }
+          // Give terminal control to child if foreground
+          if (!cmd.background) {
+            tcsetpgrp(shell_terminal, child_pid);
+          }
 
-            /* We need to rest the childs signal handling since it inhereted the
-             * signal handling from the shell which would ignore Ctrl+c
-             */
-            signal(SIGINT, SIG_DFL);
+          /* We need to rest the childs signal handling since it inhereted the
+           * signal handling from the shell which would ignore Ctrl+c
+           */
+          signal(SIGINT, SIG_DFL);
 
-            // TODO: Add chained commands here
-            
-            execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-            fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0], strerror(errno));
+          // TODO: Add chained commands here
+
+          execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
+          fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0],
+                  strerror(errno));
         } else if (pid > 0) {
-            // Parent process
-            // Put child in its own process. This is done here as well in case the parent executes before the child.
-            setpgid(pid, pid);
-          
-            if (!cmd.background) {
-                // Wait for foreground process
-                foreground_pgid = pid;
-                // Parent might run before child sets its group!
-                tcsetpgrp(shell_terminal, pid);  // Give terminal to child
-                
-                int status;
-                // 0 meaning no options
-                waitpid(pid, &status, 0);
-                
-                // Take back terminal control. We specifically ignore the signal at the top for that
-                tcsetpgrp(shell_terminal, shell_pgid);
-                foreground_pgid = 0;
+          // Parent process
+          // Put child in its own process. This is done here as well in case the
+          // parent executes before the child.
+          setpgid(pid, pid);
+
+          if (!cmd.background) {
+            // Wait for foreground process
+            foreground_pgid = pid;
+            // Parent might run before child sets its group!
+            tcsetpgrp(shell_terminal, pid); // Give terminal to child
+
+            int status;
+            // 0 meaning no options
+            waitpid(pid, &status, 0);
+
+            // Take back terminal control. We specifically ignore the signal at
+            // the top for that
+            tcsetpgrp(shell_terminal, shell_pgid);
+            foreground_pgid = 0;
           }
         } else {
-            perror("fork failed");
+          perror("fork failed");
         }
-      }
-      else
-      {
+      } else {
         printf("Parse ERROR\n");
       }
     }
@@ -182,8 +184,7 @@ int main(void)
  *
  * Helper function, no need to change. Might be useful to study as inspiration.
  */
-static void print_cmd(Command *cmd_list)
-{
+static void print_cmd(Command *cmd_list) {
   printf("------------------------------\n");
   printf("Parse OK\n");
   printf("stdin:      %s\n", cmd_list->rstdin ? cmd_list->rstdin : "<none>");
@@ -198,14 +199,10 @@ static void print_cmd(Command *cmd_list)
  *
  * Helper function, no need to change. Might be useful to study as inpsiration.
  */
-static void print_pgm(Pgm *p)
-{
-  if (p == NULL)
-  {
+static void print_pgm(Pgm *p) {
+  if (p == NULL) {
     return;
-  }
-  else
-  {
+  } else {
     char **pl = p->pgmlist;
 
     /* The list is in reversed order so print
@@ -213,36 +210,30 @@ static void print_pgm(Pgm *p)
      */
     print_pgm(p->next);
     printf("            * [ ");
-    while (*pl)
-    {
+    while (*pl) {
       printf("%s ", *pl++);
     }
     printf("]\n");
   }
 }
 
-
 /* Strip whitespace from the start and end of a string.
  *
  * Helper function, no need to change.
  */
-void stripwhite(char *string)
-{
+void stripwhite(char *string) {
   size_t i = 0;
 
-  while (isspace(string[i]))
-  {
+  while (isspace(string[i])) {
     i++;
   }
 
-  if (i)
-  {
+  if (i) {
     memmove(string, string + i, strlen(string + i) + 1);
   }
 
   i = strlen(string) - 1;
-  while (i > 0 && isspace(string[i]))
-  {
+  while (i > 0 && isspace(string[i])) {
     i--;
   }
 
