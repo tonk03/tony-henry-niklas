@@ -40,9 +40,49 @@ void stripwhite(char *);
 static pid_t foreground_pgid = 0;
 static int shell_terminal;
 static pid_t shell_pgid;
+const char *builtin_commands[] = {"cd", "exit", NULL};
+
+int is_builtin_command(const char *command) {
+  for (int i = 0; builtin_commands[i] != NULL; i++) {
+    if (strcmp(command, builtin_commands[i]) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+#include <stdio.h>  // For perror()
+#include <stdlib.h> // For getenv() and exit()
+#include <unistd.h> // For chdir()
+
+void execute_builtin(char **args) {
+  const char *command = args[0];
+
+  if (strcmp(command, "exit") == 0) {
+    // Exit the shell successfully.
+    exit(EXIT_SUCCESS);
+  } else if (strcmp(command, "cd") == 0) {
+    // Get the target directory from the second argument
+    char *target_dir = args[1];
+
+    // If no directory is specified, default to the HOME directory
+    if (target_dir == NULL) {
+      target_dir = getenv("HOME");
+      if (target_dir == NULL) {
+        fprintf(stderr, "lsh: cd: HOME not set\n");
+        return;
+      }
+    }
+
+    // Change the directory and handle errors
+    if (chdir(target_dir) != 0) {
+      perror("lsh: cd");
+    }
+  }
+  // Other builtins...
+}
 
 int main(void) {
-  // TODO: Understand
   shell_terminal = STDIN_FILENO;
   // Get out current PID to set it to a new process group later
   shell_pgid = getpid();
@@ -119,53 +159,65 @@ int main(void) {
 
       Command cmd;
       if (parse(line, &cmd) == 1) {
-        int pid = fork();
-        if (pid == 0) {
-          pid_t child_pid = getpid();
-          /* Create a own process group for the child. This can be one command
-           * or an entire chain of commands. This way we can cancel an entire
-           * chain at once with ctrl+c
-           */
-          setpgid(child_pid, child_pid);
 
-          // Give terminal control to child if foreground
-          if (!cmd.background) {
-            tcsetpgrp(shell_terminal, child_pid);
-          }
+        int is_builtin;
 
-          /* We need to rest the childs signal handling since it inhereted the
-           * signal handling from the shell which would ignore Ctrl+c
-           */
-          signal(SIGINT, SIG_DFL);
+        // We only execute builtin commands without spawning if they
+        // are not in a pipeline.
+        if (cmd.pgm->next == NULL && is_builtin_command(cmd.pgm->pgmlist[0])) {
+          // Execute it directly in the shell without spawning
+          execute_builtin(cmd.pgm->pgmlist);
 
-          // TODO: Add chained commands here
-
-          execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-          fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0],
-                  strerror(errno));
-        } else if (pid > 0) {
-          // Parent process
-          // Put child in its own process. This is done here as well in case the
-          // parent executes before the child.
-          setpgid(pid, pid);
-
-          if (!cmd.background) {
-            // Wait for foreground process
-            foreground_pgid = pid;
-            // Parent might run before child sets its group!
-            tcsetpgrp(shell_terminal, pid); // Give terminal to child
-
-            int status;
-            // 0 meaning no options
-            waitpid(pid, &status, 0);
-
-            // Take back terminal control. We specifically ignore the signal at
-            // the top for that
-            tcsetpgrp(shell_terminal, shell_pgid);
-            foreground_pgid = 0;
-          }
         } else {
-          perror("fork failed");
+
+          int pid = fork();
+          if (pid == 0) {
+            pid_t child_pid = getpid();
+            /* Create a own process group for the child. This can be one command
+             * or an entire chain of commands. This way we can cancel an entire
+             * chain at once with ctrl+c
+             */
+            setpgid(child_pid, child_pid);
+
+            // Give terminal control to child if foreground
+            if (!cmd.background) {
+              tcsetpgrp(shell_terminal, child_pid);
+            }
+
+            /* We need to rest the childs signal handling since it inhereted the
+             * signal handling from the shell which would ignore Ctrl+c
+             */
+            signal(SIGINT, SIG_DFL);
+
+            // TODO: Add chained commands here
+
+            execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
+            fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0],
+                    strerror(errno));
+          } else if (pid > 0) {
+            // Parent process
+            // Put child in its own process. This is done here as well in case
+            // the parent executes before the child.
+            setpgid(pid, pid);
+
+            if (!cmd.background) {
+              // Wait for foreground process
+              foreground_pgid = pid;
+              // Parent might run before child sets its group!
+              tcsetpgrp(shell_terminal, pid); // Give terminal to child
+
+              int status;
+              // 0 meaning no options
+              waitpid(pid, &status, 0);
+
+              // Take back terminal control. We specifically ignore the signal
+              // at the top for that
+              tcsetpgrp(shell_terminal, shell_pgid);
+              foreground_pgid = 0;
+            }
+          } else {
+            perror("fork failed");
+          }
         }
       } else {
         printf("Parse ERROR\n");
