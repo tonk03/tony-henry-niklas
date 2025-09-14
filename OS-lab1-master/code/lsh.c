@@ -25,19 +25,51 @@
 #include <readline/history.h>
 
 // The <unistd.h> header is your gateway to the OS's process management facilities.
+#include <sys/signal.h>
 #include <unistd.h>
-
 #include "parse.h"
-
-// Our imports and definitions
 #include <errno.h>
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
+static void sigchld_handler(int sig);
 void stripwhite(char *);
+
+static pid_t foreground_pgid = 0;
+static int shell_terminal;
+static pid_t shell_pgid;
 
 int main(void)
 {
+  // TODO: Understand
+  shell_terminal = STDIN_FILENO;
+  // Get out current PID to set it to a new process group later
+  shell_pgid = getpid();
+
+  // Set our shell to its own process group
+  if (setpgid(shell_pgid, shell_pgid) < 0) {
+    perror("Couldn't put shell in its own process group");
+    exit(1);
+  }
+
+  tcsetpgrp(shell_terminal, shell_pgid);
+
+  // Make it ignore ctrl + c
+  signal(SIGINT, SIG_IGN);
+  /*
+   * From man7:
+   * Attempts to use tcsetpgrp() from a process which is a member of a
+       background process group on a fildes associated with its
+       controlling terminal shall cause the process group to be sent a
+       SIGTTOU signal. If the calling thread is blocking SIGTTOU signals
+       or the process is ignoring SIGTTOU signals, the process shall be
+       allowed to perform the operation, and no signal is sent.
+   * Since we put our shell to the background once we put the child process group
+   * to the foreground we have to ignore the signal once the shell background 
+   * process is trying to get back its control.
+   */
+  signal(SIGTTOU, SIG_IGN);
+
   for (;;)
   {
     char *line;
@@ -86,14 +118,50 @@ int main(void)
       Command cmd;
       if (parse(line, &cmd) == 1)
       {
-        // Just prints cmd
-        print_cmd(&cmd);
         int pid = fork();
         if (pid == 0) {
+            pid_t child_pid = getpid();
+            /* Create a own process group for the child. This can be one command
+             * or an entire chain of commands. This way we can cancel an entire 
+             * chain at once with ctrl+c
+             */
+            setpgid(child_pid, child_pid);
+
+            // Give terminal control to child if foreground
+            if (!cmd.background) {
+                tcsetpgrp(shell_terminal, child_pid);
+            }
+
+            /* We need to rest the childs signal handling since it inhereted the
+             * signal handling from the shell which would ignore Ctrl+c
+             */
+            signal(SIGINT, SIG_DFL);
+
+            // TODO: Add chained commands here
+            
             execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
             fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0], strerror(errno));
+        } else if (pid > 0) {
+            // Parent process
+            // Put child in its own process. This is done here as well in case the parent executes before the child.
+            setpgid(pid, pid);
+          
+            if (!cmd.background) {
+                // Wait for foreground process
+                foreground_pgid = pid;
+                // Parent might run before child sets its group!
+                tcsetpgrp(shell_terminal, pid);  // Give terminal to child
+                
+                int status;
+                // 0 meaning no options
+                waitpid(pid, &status, 0);
+                
+                // Take back terminal control. We specifically ignore the signal at the top for that
+                tcsetpgrp(shell_terminal, shell_pgid);
+                foreground_pgid = 0;
+          }
         } else {
-            wait(&pid);
+            perror("fork failed");
         }
       }
       else
