@@ -58,6 +58,17 @@ void print_color(const char *text, Color fg, int bold) {
     printf("\033[%dm%s\033[0m", fg, text);
 }
 
+void cleanup_and_exit(int code) {
+    int status;
+
+    // Reap already-terminated children
+    while (waitpid(-1, &status, WNOHANG) > 0) {
+        // nothing
+    }
+
+    exit(code);
+}
+
 // Used to make error codes red
 void perror_red(const char *msg) {
   fprintf(stderr, "\033[31m"); // red
@@ -66,7 +77,7 @@ void perror_red(const char *msg) {
 }
 
 void sigint_handler(int sig) {
-  fprintf(stderr, "\033[0m"); // red
+  // fprintf(stderr, "\033[0m"); // red
   printf("\nCaught SIGINT (%d). Use 'exit' or 'Ctrl+D' to quit shell.\n", sig);
   print_color("> ", BLUE, 1);
 }
@@ -79,7 +90,7 @@ void sigchld_handler(int sig) {
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         
     }
-    fprintf(stderr, "\033[0m");
+    //fprintf(stderr, "\033[0m");
 }
 
 int main(int argc, char *argv[]) // argc is number of arguments. argv contains or arguments. first argument is the program name
@@ -106,7 +117,7 @@ int main(int argc, char *argv[]) // argc is number of arguments. argv contains o
   signal(SIGCHLD, sigchld_handler); // Auto kill bg processes to avoid zombies
 
   system("clear"); // System not allowedfor lab TODO look into how to clear without system (maybe just print like 20 newlines)
-  print_color("----- Welcome to Henry's terminal! -----\n----------------------------------------\n", YELLOW, 1);
+  print_color("----- Welcome to our terminal! -----\n----------------------------------------\n", YELLOW, 1);
   for (;;)
   {
     char *line;
@@ -117,8 +128,8 @@ int main(int argc, char *argv[]) // argc is number of arguments. argv contains o
     // Ctrl+D
     if (line == NULL) 
     {
-      printf("\n");
-      exit(0); // Does this leave zombies?
+    printf("\n");
+    cleanup_and_exit(0);
     }
 
     // Remove leading and trailing whitespace from the line
@@ -169,7 +180,7 @@ static void run_cmd(Command cmd)
     }
   }
   else if (strcmp(cmd.pgm->pgmlist[0], "exit") == 0) {
-    exit(1);
+    cleanup_and_exit(0);
   }
   // Command that should be sent to a subprocess
   else {
@@ -179,13 +190,18 @@ static void run_cmd(Command cmd)
     pid_t pid = fork(); 
     if (pid == 0)
     { 
+      if (cmd.background) {
+        // put background jobs in their own process group so they do not die on Ctrl+C
+        setpgid(0, 0);
+      }
+  
       signal(SIGINT, SIG_DFL); // Enable Ctrl+C on child process
       // Check if result should be inputted
       if (cmd.rstdin) freopen(cmd.rstdin, "r", stdin);
       // Check if result should be outputted
       if (cmd.rstdout) freopen(cmd.rstdout, "w", stdout);
       // Parse command
-      fprintf(stderr, "\033[32m"); // Set green color
+      //fprintf(stderr, "\033[32m"); // Set green color
       execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
       // If code reaches this point an error occured, execv should auto exit child process
       perror_red("exec failed");
@@ -202,7 +218,7 @@ static void run_cmd(Command cmd)
         int status;
         waitpid(pid, &status, 0);
       }
-      fprintf(stderr, "\033[0m"); // Reset color
+      // fprintf(stderr, "\033[0m"); // Reset color
     }
   }
 }
