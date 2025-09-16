@@ -38,6 +38,10 @@
 
 static void run_cmd(Command cmd);
 static void run_piped_cmd(Command cmd);
+static void child_exec(Pgm *pgm, Command *cmd,
+                       int fd_in, int fd_out,
+                       int is_first, int is_last,
+                       int close_fd1, int close_fd2);
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
 void stripwhite(char *);
@@ -206,9 +210,8 @@ static void run_cmd(Command cmd)
     cleanup_and_exit(0);
   }
 
-  else if (cmd.pgm->next != NULL)
+  else if (cmd.pgm->next != NULL) // There is more than one Pgm, so it is a pipeline
   {
-    // There is more than one Pgm, so it is a pipeline
     run_piped_cmd(cmd);
   }
   // Command that should be sent to a subprocess
@@ -220,25 +223,8 @@ static void run_cmd(Command cmd)
     pid_t pid = fork();
     if (pid == 0)
     {
-      if (cmd.background)
-      {
-        // put background jobs in their own process group so they do not die on Ctrl+C
-        setpgid(0, 0);
-      }
-
-      signal(SIGINT, SIG_DFL); // Enable Ctrl+C on child process
-      // Check if result should be inputted to file (>)
-      if (cmd.rstdin)
-        freopen(cmd.rstdin, "r", stdin);
-      // Check if result should be outputted to file (<)
-      if (cmd.rstdout)
-        freopen(cmd.rstdout, "w", stdout);
-      // Parse command
-      // fprintf(stderr, "\033[32m"); // Set green color
-      execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-      // If code reaches this point an error occured as execv should auto exit child process
-      perror_red("exec failed");
-      exit(1);
+      // delegate all child setup (pgid, SIGINT, redirections, exec) to helper
+      child_exec(cmd.pgm, &cmd, -1, -1, 1, 1, -1, -1);
     }
     else if (pid < 0)
     {
@@ -259,143 +245,168 @@ static void run_cmd(Command cmd)
 
 static void run_piped_cmd(Command cmd)
 {
-  // 1) Collect the Pgm* in an array so we can run left -> right
-  Pgm *command_list[64];
-  int n = 0;
-  for (Pgm *q = cmd.pgm; q != NULL; q = q->next)
-  {
-    if (n >= 64)
-    {
+  // step 1: walk through the linked list of programs we got from the parser.
+  // the parser gives them in reverse order (the last command in the pipeline is the head in the list).
+  // so here we copy them into a temporary array in that parser order.
+  Pgm *parser_list[64]; // max list size of 64 only arbitrarily 
+  int count = 0;
+  for (Pgm *q = cmd.pgm; q != NULL; q = q->next) {
+    if (count >= 64) {
       fprintf(stderr, "pipeline too long\n");
       return;
     }
-    command_list[n++] = q; // command_list[0] is rightmost, command_list[n-1] is leftmost
+    parser_list[count++] = q; // parser_list[0] = rightmost, parser_list[count-1] = leftmost
   }
 
-  int prev_fd_read = -1; // read end from the previous command (to our left)
+  // step 2: reverse the temporary array so we get a normal left-to-right order
+  // now command_list[0] really is the leftmost program in the pipeline,
+  // command_list[count-1] is the rightmost program.
+  Pgm *command_list[count];
+  for (int i = 0; i < count; ++i) {
+    command_list[i] = parser_list[count - 1 - i];
+  }
+
+  int prev_fd_read = -1;     // this keeps track of the read end of the previous pipe
   pid_t children[64];
   int child_count = 0;
 
-  // iterate from leftmost to rightmost: i = n-1 .. 0
-  for (int i = n - 1; i >= 0; --i)
-  {
-    int fd[2] = {-1, -1};
-    // there is a command to our right iff i > 0 (we iterate left -> right: n-1 ... 0)
-    int not_last = (i > 0);
+  // step 3: go through each program from left to right and set up pipes + forks
+  for (int i = 0; i < count; ++i) {
+    int fd[2] = { -1, -1 };
+    int not_last = (i < count - 1); // true if this is not the rightmost command
 
-    if (not_last)
-    {
-      if (pipe(fd) < 0)
-      {
+    // if not the last command, create a pipe so its output can feed the next command
+    if (not_last) {
+      if (pipe(fd) < 0) {
         perror_red("pipe");
-        if (prev_fd_read != -1)
-          close(prev_fd_read);
+        if (prev_fd_read != -1) close(prev_fd_read);
         return;
       }
     }
 
     pid_t pid = fork();
-    if (pid < 0)
-    {
+    if (pid < 0) {
       perror_red("fork");
-      if (prev_fd_read != -1)
-        close(prev_fd_read);
-      if (not_last)
-      {
-        close(fd[0]);
-        close(fd[1]);
-      }
+      if (prev_fd_read != -1) close(prev_fd_read);
+      if (not_last) { close(fd[0]); close(fd[1]); }
       return;
     }
 
-    if (pid == 0)
-    {
-      // child
-      if (cmd.background)
-      {
-        setpgid(0, 0); // simple detach, no job control grouping
-      }
-      signal(SIGINT, SIG_DFL);
-
-      // stdin: from previous read end, otherwise rstdin for the first (leftmost) command
-      if (prev_fd_read != -1)
-      {
-        if (dup2(prev_fd_read, STDIN_FILENO) < 0)
-        {
-          perror_red("dup2 stdin");
-          _exit(1);
-        }
-      }
-      else if (cmd.rstdin && i == n - 1)
-      {
-        if (freopen(cmd.rstdin, "r", stdin) == NULL)
-        {
-          perror_red("freopen rstdin");
-          _exit(1);
-        }
-      }
-
-      // stdout: to pipe if not last, otherwise rstdout for the last (rightmost) command
-      if (not_last)
-      {
-        if (dup2(fd[1], STDOUT_FILENO) < 0)
-        {
-          perror_red("dup2 stdout");
-          _exit(1);
-        }
-      }
-      else if (cmd.rstdout && i == 0)
-      {
-        if (freopen(cmd.rstdout, "w", stdout) == NULL)
-        {
-          perror_red("freopen rstdout");
-          _exit(1);
-        }
-      }
-
-      // close unused fds in child
-      if (prev_fd_read != -1)
-        close(prev_fd_read);
-      if (not_last)
-      {
-        close(fd[0]);
-        close(fd[1]);
-      }
-      printf(command_list[i]->pgmlist[0]);
-      execvp(command_list[i]->pgmlist[0], command_list[i]->pgmlist);
-      perror_red("execvp");
-      _exit(1);
+    if (pid == 0) {
+      // delegate all child setup (pgid, SIGINT, pipes/files, exec) to helper
+      child_exec(
+        command_list[i], &cmd,
+        /* fd_in  */ prev_fd_read,
+        /* fd_out */ not_last ? fd[1] : -1,
+        /* first? */ i == 0,
+        /* last?  */ i == count - 1,
+        /* close_fd1 (e.g., current pipe read end) */ not_last ? fd[0] : -1,
+        /* close_fd2 (optionally also close write end after dup2) */ not_last ? fd[1] : -1
+      );
     }
 
-    // parent
+    // parent process
     children[child_count++] = pid;
 
-    if (prev_fd_read != -1)
-      close(prev_fd_read);
-    if (not_last)
-    {
-      close(fd[1]);         // parent does not write
-      prev_fd_read = fd[0]; // pass read end to the next child
-    }
-    else
-    {
+    // we don’t need the previous read end anymore, close it
+    if (prev_fd_read != -1) close(prev_fd_read);
+
+    if (not_last) {
+      // we also don’t need the write end of this pipe in the parent
+      close(fd[1]);
+      // keep the read end so the next command can use it as stdin
+      prev_fd_read = fd[0];
+    } else {
       prev_fd_read = -1;
     }
   }
 
-  if (prev_fd_read != -1)
-    close(prev_fd_read);
+  if (prev_fd_read != -1) close(prev_fd_read);
 
-  // wait only for our children, and only if foreground
-  if (!cmd.background)
-  {
-    for (int i = 0; i < child_count; ++i)
-    {
+  // step 4: if this is a foreground job, wait for all child processes to finish
+  if (!cmd.background) {
+    for (int i = 0; i < child_count; ++i) {
       int status;
       waitpid(children[i], &status, 0);
     }
   }
 }
+
+
+static void child_exec(Pgm *pgm, Command *cmd,
+                       int fd_in, int fd_out,
+                       int is_first, int is_last,
+                       int close_fd1, int close_fd2)
+{
+    // shared (both run_cmd and run_piped_cmd)
+    if (cmd->background)
+    {
+        // put background jobs in their own process group so they do not die on Ctrl+C
+        setpgid(0, 0);
+    }
+    // child should react normally to ctrl+c
+    signal(SIGINT, SIG_DFL); // Enable Ctrl+C on child process
+
+    // run_cmd-specific (single command, no pipes)
+    if (fd_in == -1 && is_first && cmd->rstdin)
+    {
+        // Check if result should be inputted to file (>)
+        // first command and user gave an input redirection file
+        if (freopen(cmd->rstdin, "r", stdin) == NULL)
+        {
+            perror_red("freopen rstdin");
+            _exit(1);
+        }
+    }
+    if (fd_out == -1 && is_last && cmd->rstdout)
+    {
+        // Check if result should be outputted to file (<)
+        // last command and user gave an output redirection file
+        if (freopen(cmd->rstdout, "w", stdout) == NULL)
+        {
+            perror_red("freopen rstdout");
+            _exit(1);
+        }
+    }
+
+    // run_piped_cmd-specific (pipes)
+    if (fd_in != -1)
+    {
+        // not the first command, so take input from the previous pipe
+        if (dup2(fd_in, STDIN_FILENO) < 0)
+        {
+            perror_red("dup2 stdin");
+            _exit(1);
+        }
+    }
+    if (fd_out != -1)
+    {
+        // not the last command, so send output into the pipe
+        if (dup2(fd_out, STDOUT_FILENO) < 0)
+        {
+            perror_red("dup2 stdout");
+            _exit(1);
+        }
+    }
+
+    // run_piped_cmd cleanup (closing pipe ends not used)
+    if (fd_in != -1) close(fd_in);
+    if (fd_out != -1) close(fd_out);
+    if (close_fd1 != -1 && close_fd1 != fd_in && close_fd1 != fd_out) close(close_fd1);
+    if (close_fd2 != -1 && close_fd2 != fd_in && close_fd2 != fd_out && close_fd2 != close_fd1) close(close_fd2);
+
+    // shared tail (both run_cmd and run_piped_cmd)
+    // Parse command
+    // fprintf(stderr, "\033[32m"); // Set green color
+
+    // finally execute the program
+    execvp(pgm->pgmlist[0], pgm->pgmlist);
+    // If code reaches this point an error occured as execv should auto exit child process
+    perror_red("execvp");
+    _exit(1);
+}
+
+
 
 /*
  * Print a Command structure as returned by parse on stdout.
