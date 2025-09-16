@@ -6,6 +6,8 @@ Use `cmake`:
 cmake -Bbuild
 cmake --build build
 ./build/lsh
+
+cmake -Bbuild && cmake --build build && ./build/lsh
 ```
 
 Has been tested on:
