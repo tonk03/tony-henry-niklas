@@ -46,7 +46,19 @@ static int shell_terminal;
 static pid_t shell_pgid;
 const char *builtin_commands[] = {"cd", "exit", NULL};
 
-int is_builtin_command(const char *command) {
+/*
+ * Signal handler for SIGCHLD. Reaps all terminated child processes.
+ */
+static void sigchld_handler() {
+    // Apparently waitpid can overwrite errno, but we ignore that for now.
+    // The WNOHANG option prevents waitpid() from blocking if there are no
+    // terminated children. The loop ensures we reap all zombies.
+    while (waitpid(-1, NULL, WNOHANG) > 0) {
+        // This loop body can be empty. The work is done in the condition.
+    }
+}
+
+static int is_builtin_command(const char *command) {
   for (int i = 0; builtin_commands[i] != NULL; i++) {
     if (strcmp(command, builtin_commands[i]) == 0) {
       return 1;
@@ -157,6 +169,8 @@ int main(void) {
 
   // Make it ignore ctrl + c
   signal(SIGINT, SIG_IGN);
+  // Make background processes get reaped when they send their SIGCHLD
+  signal(SIGCHLD, sigchld_handler);
   /*
    * From man7:
    * Attempts to use tcsetpgrp() from a process which is a member of a
