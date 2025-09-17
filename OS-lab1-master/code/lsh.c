@@ -178,8 +178,9 @@ int main(void) {
 
   tcsetpgrp(shell_terminal, shell_pgid);
 
-  // Make it ignore ctrl + c
-  signal(SIGINT, SIG_IGN);
+  // Assign signal handler that sends SIGINT to entire process group
+  // if its running in foreground.
+  signal(SIGINT, sigint_handler);
   // Make background processes get reaped when they send their SIGCHLD
   signal(SIGCHLD, sigchld_handler);
   /*
@@ -266,10 +267,6 @@ int main(void) {
             if (!cmd.background) {
               tcsetpgrp(shell_terminal, child_pid);
             }
-
-            // Assign signal handler that sends SIGINT to entire process group
-            // if its running in foreground.
-            signal(SIGINT, sigint_handler);
 
             /*
              * As described in the Advanced Programming in UNIX environments
