@@ -35,6 +35,7 @@
 #include <stdio.h>  // For perror()
 #include <stdlib.h> // For getenv() and exit()
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <unistd.h> // For chdir()
 
