@@ -31,9 +31,10 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>  // For perror()
 #include <stdlib.h> // For getenv() and exit()
-#include <sys/signal.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <unistd.h> // For chdir()
 
@@ -50,12 +51,22 @@ const char *builtin_commands[] = {"cd", "exit", NULL};
  * Signal handler for SIGCHLD. Reaps all terminated child processes.
  */
 static void sigchld_handler() {
-    // Apparently waitpid can overwrite errno, but we ignore that for now.
-    // The WNOHANG option prevents waitpid() from blocking if there are no
-    // terminated children. The loop ensures we reap all zombies.
-    while (waitpid(-1, NULL, WNOHANG) > 0) {
-        // This loop body can be empty. The work is done in the condition.
-    }
+  // Apparently waitpid can overwrite errno, but we ignore that for now.
+  // The WNOHANG option prevents waitpid() from blocking if there are no
+  // terminated children. The loop ensures we reap all zombies.
+  while (waitpid(-1, NULL, WNOHANG) > 0) {
+    // This loop body can be empty. The work is done in the condition.
+  }
+}
+
+void sigint_handler() {
+  // Check if there is a foreground process
+  if (foreground_pgid > 0) {
+    // Send SIGINT to the entire process group.
+    // The negative sign means it should kill the entire group, not just one
+    // process
+    kill(-foreground_pgid, SIGINT);
+  }
 }
 
 static int is_builtin_command(const char *command) {
@@ -154,7 +165,7 @@ void execute_builtin(char **args) {
 int main(void) {
   int pipefd[2];
   shell_terminal = STDIN_FILENO;
- 
+
   // Don't put our own shell in its own process group to pass the tests
   //
   // Get out current PID to set it to a new process group later
@@ -256,10 +267,9 @@ int main(void) {
               tcsetpgrp(shell_terminal, child_pid);
             }
 
-            /* We need to rest the childs signal handling since it inhereted the
-             * signal handling from the shell which would ignore Ctrl+c
-             */
-            signal(SIGINT, SIG_DFL);
+            // Assign signal handler that sends SIGINT to entire process group
+            // if its running in foreground.
+            signal(SIGINT, sigint_handler);
 
             /*
              * As described in the Advanced Programming in UNIX environments
