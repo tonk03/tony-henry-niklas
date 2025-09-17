@@ -34,7 +34,6 @@
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
-static void sigchld_handler(int sig);
 void stripwhite(char *);
 
 static pid_t foreground_pgid = 0;
@@ -159,8 +158,6 @@ int main(void) {
 
       Command cmd;
       if (parse(line, &cmd) == 1) {
-
-        int is_builtin;
 
         // We only execute builtin commands without spawning if they
         // are not in a pipeline.
