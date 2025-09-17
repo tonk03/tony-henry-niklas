@@ -28,9 +28,14 @@
 // The <unistd.h> header is your gateway to the OS's process management
 // facilities.
 #include "parse.h"
+#include <err.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>  // For perror()
+#include <stdlib.h> // For getenv() and exit()
 #include <sys/signal.h>
 #include <unistd.h>
+#include <unistd.h> // For chdir()
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
@@ -50,9 +55,62 @@ int is_builtin_command(const char *command) {
   return 0;
 }
 
-#include <stdio.h>  // For perror()
-#include <stdlib.h> // For getenv() and exit()
-#include <unistd.h> // For chdir()
+static void redirect_stdout(int fd[2]) {
+  // Redirect stdout (file descriptor 1) to our opened file.
+  if (dup2(fd[1], STDOUT_FILENO) < 0) {
+    perror("lsh: failed to redirect stdout");
+    exit(EXIT_FAILURE);
+  }
+
+  // The original file descriptor is no longer needed.
+  close(fd[1]);
+  if (fd[0] >= 0) {
+    close(fd[0]);
+  }
+}
+
+static void redirect_stdout_to_file(char *file) {
+  // Open the file with write, create, and truncate flags.
+  // Set permissions to 0644 (owner can read/write, others can read).
+  int out_fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+  // Always check for errors.
+  if (out_fd < 0) {
+    perror("lsh: failed to open output file");
+    exit(EXIT_FAILURE); // Exit child process on failure
+  }
+
+  int fd[2] = {-1, out_fd};
+  redirect_stdout(fd);
+}
+
+static void redirect_stdin(int fd[2]) {
+  // Redirect stdin (file descriptor 0) to our opened file.
+  if (dup2(fd[0], STDIN_FILENO) < 0) {
+    perror("lsh: failed to redirect stdin");
+    exit(EXIT_FAILURE);
+  }
+
+  // Close the original file descriptor.
+  close(fd[0]);
+  if (fd[1] >= 0) {
+    close(fd[1]);
+  }
+}
+
+static void redirect_stdin_to_file(char *file) {
+  // Open the file for reading only.
+  int in_fd = open(file, O_RDONLY);
+
+  // Check for errors (e.g., file not found).
+  if (in_fd < 0) {
+    perror("lsh: failed to open input file");
+    exit(EXIT_FAILURE);
+  }
+
+  int fd[2] = {in_fd, -1};
+  redirect_stdin(fd);
+}
 
 void execute_builtin(char **args) {
   const char *command = args[0];
@@ -82,6 +140,7 @@ void execute_builtin(char **args) {
 }
 
 int main(void) {
+  int pipefd[2];
   shell_terminal = STDIN_FILENO;
   // Get out current PID to set it to a new process group later
   shell_pgid = getpid();
@@ -186,11 +245,67 @@ int main(void) {
              */
             signal(SIGINT, SIG_DFL);
 
-            // TODO: Add chained commands here
+            /*
+             * As described in the Advanced Programming in UNIX environments
+             * book on Fig 9.10, the first command entered in the shell will be
+             * the last command executed from the first forked child. This is
+             * also why the pgmlist is very likely reversed.
+             */
 
-            execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
-            fprintf(stderr, "lsh: %s: fopen failed: %s\n", cmd.pgm->pgmlist[0],
-                    strerror(errno));
+            // If only one command is provided
+            if (cmd.pgm->next == NULL) {
+              if (cmd.rstdout != NULL) {
+                redirect_stdout_to_file(cmd.rstdout);
+              }
+              if (cmd.rstdin != NULL) {
+                redirect_stdin_to_file(cmd.rstdin);
+              }
+              execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
+            }
+
+            // If multiple commands are provided
+            Pgm *next_pgm = cmd.pgm;
+
+            if (pipe(pipefd) == -1)
+              err(EXIT_FAILURE, "pipe");
+
+            pid_t pid = fork();
+            if (pid == 0) {
+              redirect_stdin(pipefd);
+              if (cmd.rstdout != NULL) {
+                redirect_stdout_to_file(cmd.rstdout);
+              }
+              execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
+            } else if (pid < 0) {
+              printf("fork failed");
+            }
+            next_pgm = next_pgm->next;
+
+            while (next_pgm != NULL && next_pgm->next != NULL) {
+              int previous_pipe[2] = {pipefd[0], pipefd[1]};
+              if (pipe(pipefd) == -1)
+                err(EXIT_FAILURE, "pipe");
+
+              pid_t pid = fork();
+              if (pid == 0) {
+                redirect_stdout(previous_pipe);
+                redirect_stdin(pipefd);
+                execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
+              } else if (pid > 0) {
+                close(previous_pipe[0]);
+                close(previous_pipe[1]);
+              } else {
+                printf("fork failed");
+              }
+              next_pgm = next_pgm->next;
+            }
+
+            // Execute last command without fork
+            if (cmd.rstdin != NULL) {
+              redirect_stdin_to_file(cmd.rstdin);
+            }
+            redirect_stdout(pipefd);
+            execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
           } else if (pid > 0) {
             // Parent process
             // Put child in its own process. This is done here as well in case
