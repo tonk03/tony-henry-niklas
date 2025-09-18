@@ -19,9 +19,9 @@
  */
 #include <assert.h>
 #include <ctype.h>
+#include <stdio.h>
 #include <readline/history.h>
 #include <readline/readline.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,12 +32,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <stdio.h>  // For perror()
-#include <stdlib.h> // For getenv() and exit()
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <unistd.h> // For chdir()
 
 static void print_cmd(Command *cmd);
 static void print_pgm(Pgm *p);
@@ -171,7 +168,7 @@ int main(void) {
   //
   // Get out current PID to set it to a new process group later
   shell_pgid = getpid();
-  // // Set our shell to its own process group
+  // Set our shell to its own process group
   // if (setpgid(shell_pgid, shell_pgid) < 0) {
   //   perror("Couldn't put shell in its own process group");
   //   exit(1);
