@@ -52,7 +52,7 @@ static void sigchld_handler() {
   // Apparently waitpid can overwrite errno, but we ignore that for now.
   // The WNOHANG option prevents waitpid() from blocking if there are no
   // terminated children. The loop ensures we reap all zombies.
-  while (waitpid(-1, NULL, WNOHANG) > 0) {
+  while (waitpid(-1, NULL, WNOHANG) > 0) { // -1 means any child process
     // This loop body can be empty. The work is done in the condition.
   }
 }
@@ -189,8 +189,7 @@ int main(void) {
        SIGTTOU signal. If the calling thread is blocking SIGTTOU signals
        or the process is ignoring SIGTTOU signals, the process shall be
        allowed to perform the operation, and no signal is sent.
-   * Since we put our shell to the background once we put the child process
-   group
+   * Since we put our shell to the background once we put the child process group
    * to the foreground we have to ignore the signal once the shell background
    * process is trying to get back its control.
    */
@@ -276,72 +275,72 @@ int main(void) {
             // If only one command is provided
             if (cmd.pgm->next == NULL) {
               if (cmd.rstdout != NULL) {
-                redirect_stdout_to_file(cmd.rstdout);
+                redirect_stdout_to_file(cmd.rstdout); // > operator
               }
               if (cmd.rstdin != NULL) {
-                redirect_stdin_to_file(cmd.rstdin);
+                redirect_stdin_to_file(cmd.rstdin); // < operator 
               }
               execvp(cmd.pgm->pgmlist[0], cmd.pgm->pgmlist);
             }
 
             // If multiple commands are provided
-            Pgm *next_pgm = cmd.pgm;
+            Pgm *next_pgm = cmd.pgm;  // rightmost command
 
             if (pipe(pipefd) == -1)
               err(EXIT_FAILURE, "pipe");
 
             pid_t pid = fork();
             if (pid == 0) {
-              redirect_stdin(pipefd);
+              redirect_stdin(pipefd); // redirect the command's stdin to take in pipe's read end 
               if (cmd.rstdout != NULL) {
-                redirect_stdout_to_file(cmd.rstdout);
+                redirect_stdout_to_file(cmd.rstdout); // if > operator
               }
               execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
             } else if (pid < 0) {
               printf("fork failed");
             }
-            next_pgm = next_pgm->next;
+            next_pgm = next_pgm->next; // move left to the next command
 
-            while (next_pgm != NULL && next_pgm->next != NULL) {
-              int previous_pipe[2] = {pipefd[0], pipefd[1]};
+            while (next_pgm != NULL && next_pgm->next != NULL) { // loop until not at leftmost stage
+              int previous_pipe[2] = {pipefd[0], pipefd[1]};   // save previous pipe before forking
               if (pipe(pipefd) == -1)
                 err(EXIT_FAILURE, "pipe");
 
               pid_t pid = fork();
-              if (pid == 0) {
-                redirect_stdout(previous_pipe);
-                redirect_stdin(pipefd);
+              if (pid == 0) {     // child branch
+                redirect_stdout(previous_pipe);   // redirect command's stdout to previous pipe's write end
+                redirect_stdin(pipefd);           // redirect command's stdin to take in new pipe's read end
                 execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
-              } else if (pid > 0) {
+              } else if (pid > 0) { // parent branch must close its own copies of pipes so downstream can see EOF
                 close(previous_pipe[0]);
                 close(previous_pipe[1]);
               } else {
                 printf("fork failed");
               }
-              next_pgm = next_pgm->next;
+              next_pgm = next_pgm->next; // move left to the next command
             }
 
             // Execute last command without fork
             if (cmd.rstdin != NULL) {
-              redirect_stdin_to_file(cmd.rstdin);
+              redirect_stdin_to_file(cmd.rstdin); // if < operator
             }
-            redirect_stdout(pipefd);
+            redirect_stdout(pipefd); // redirect final command's stdout to pipe's write end 
             execvp(next_pgm->pgmlist[0], next_pgm->pgmlist);
           } else if (pid > 0) {
-            // Parent process
+            // Parent process that started everything
             // Put child in its own process. This is done here as well in case
             // the parent executes before the child.
             setpgid(pid, pid);
 
             if (!cmd.background) {
               // Wait for foreground process
-              foreground_pgid = pid;
+              foreground_pgid = pid;    // give fg the child's pid for sigint_handler ctrl+c
               // Parent might run before child sets its group!
               tcsetpgrp(shell_terminal, pid); // Give terminal to child
 
               int status;
               // 0 meaning no options
-              waitpid(pid, &status, 0);
+              waitpid(pid, &status, 0); // wait for group leader (first child) and reap it
 
               // Take back terminal control. We specifically ignore the signal
               // at the top for that
