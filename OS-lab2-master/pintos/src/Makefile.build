@@ -89,7 +89,9 @@ threads/loader.o: threads/loader.S
 	$(CC) -c $< -o $@ $(ASFLAGS) $(CPPFLAGS) $(DEFINES)
 
 loader.bin: threads/loader.o
-	$(LD) -N -e 0 -Ttext 0x7c00 --oformat binary -o $@ $<
+	$(OBJCOPY) -O binary --only-section=.text $< $@
+	truncate -s 512 $@
+	printf '\x55\xAA' | dd of=$@ bs=1 seek=510 conv=notrunc
 
 os.dsk: kernel.bin
 	cat $^ > $@

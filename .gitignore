@@ -1,6 +1,20 @@
 # Prerequisites
 *.d
 
+
+# Pintos build artifacts
+pintos/src/*/build/
+*.o
+*.d
+*.bin
+bochsrc.txt
+bochsout.txt
+results
+grade
+*.dsk
+
+/.vscode
+
 # Object files
 *.o
 *.ko
