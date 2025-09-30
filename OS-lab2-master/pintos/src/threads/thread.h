@@ -92,6 +92,10 @@ struct thread
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+    
+    // Tony added:
+    int64_t sleep_until; // variable to check sleep until
+    
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

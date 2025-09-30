@@ -7,6 +7,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -89,11 +90,31 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
-
+  if (ticks <= 0) return;
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  enum intr_level old_level = intr_disable (); // disable interrupts to synchronize kernel threads
+  struct thread *current_thread = thread_current (); // get current thread
+  int64_t start = timer_ticks ();
+  current_thread -> sleep_until = start + ticks; // give current thread's time blocked the sum of start and ticks
+  
+  thread_block(); 
+  
+  intr_set_level (old_level); // enable after block bcs block needs interrrupt disabled
+  
+}
+
+static void
+wakeup_check (struct thread *thread, void *aux UNUSED)
+{
+  // check if blocked and check time
+  if (thread->status == THREAD_BLOCKED &&
+    thread->sleep_until == ticks) {
+      enum intr_level old_level = intr_disable (); // disable interrupts to synchronize kernel threads
+      thread->sleep_until = 0;
+      thread_unblock(thread);
+      intr_set_level (old_level); // enable after block bcs block needs interrupt disabled
+    }
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,8 +191,11 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+
   ticks++;
   thread_tick ();
+  thread_foreach(&wakeup_check, NULL); // use thread_foreach to iterate over all blocked threads and check using wakeup_check
+  
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
