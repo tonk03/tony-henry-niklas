@@ -117,6 +117,14 @@ thread_start (void)
   sema_down (&idle_started);
 }
 
+void update_sleeping_threads(struct thread *t, void *aux) {
+    int64_t now = *(int64_t *)aux;
+    if (t->status == THREAD_BLOCKED && t->wakeup_time > 0 && t->wakeup_time <= now) {
+        t->wakeup_time = 0;
+        thread_unblock(t);
+    }
+}
+
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
@@ -469,6 +477,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  t->wakeup_time = 0;
   list_push_back (&all_list, &t->allelem);
 }
 
