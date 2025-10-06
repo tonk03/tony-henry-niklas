@@ -176,8 +176,8 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   int64_t now = ++ticks;
-  thread_foreach(update_sleeping_threads, &now);
   thread_tick ();
+  thread_foreach(update_sleeping_threads, &now);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
