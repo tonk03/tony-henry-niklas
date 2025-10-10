@@ -56,6 +56,17 @@ typedef struct {
   unsigned long transfer_duration;
 } task_t;
 
+struct lock bus_lock;
+struct condition can_send;
+
+int priority_send_queue = 0;
+int send_queue = 0;
+int priority_receive_queue = 0;
+int receive_queue = 0;
+
+direction_t bus_direction = SEND;
+int bus_riders = 0;
+
 void init_bus (void);
 void batch_scheduler (unsigned int num_priority_send,
                       unsigned int num_priority_receive,
@@ -82,6 +93,9 @@ void init_bus (void) {
 
   /* TODO: Initialize global/static variables,
      e.g. your condition variables, locks, counters etc */
+  
+  lock_init(&bus_lock);
+  cond_init(&can_send);
 }
 
 void batch_scheduler (unsigned int num_priority_send,
@@ -188,6 +202,59 @@ void get_slot (const task_t *task) {
    * feel free to schedule priority tasks of the same direction,
    * even if there are priority tasks of the other direction waiting
    */
+    lock_acquire(&bus_lock);
+    priority_t my_priority = task->priority;
+    direction_t my_direction = task->direction;
+    ASSERT(my_priority != NUM_OF_PRIORITIES);
+    ASSERT(my_direction != NUM_OF_DIRECTIONS);
+
+    if (my_priority == PRIORITY) {
+        if (my_direction == SEND) {
+            priority_send_queue++;
+        } else {
+            priority_receive_queue++;
+        }
+        while (bus_riders == BUS_CAPACITY) {
+            cond_wait(&can_send, &bus_lock);
+        }
+    } else {
+        if (my_direction == SEND) {
+            send_queue++;
+        } else {
+            receive_queue++;
+        }
+        // Normal tasks wait for:
+        // - Capacity to be available
+        // - Bus direction to match (if bus is in use)
+        // - No priority tasks waiting (any direction)
+        while (bus_riders == BUS_CAPACITY || 
+            (bus_riders > 0 && bus_direction != my_direction) ||
+            priority_send_queue > 0 || priority_receive_queue > 0) {
+            cond_wait(&can_send, &bus_lock);
+        }
+    }
+
+    // TODO: Do whatever needs to be done here
+    // WORK WORK WORK
+    bus_direction = my_direction;
+    bus_riders++;
+   
+    if (my_priority == PRIORITY) {
+        if (my_direction == SEND) {
+            priority_send_queue--;
+        } else {
+            priority_receive_queue--;
+        }
+    }
+    else {
+        if (my_direction == SEND) {
+            send_queue--;
+        } else {
+            receive_queue--;
+        }
+    }
+
+    lock_release(&bus_lock);
 }
 
 void transfer_data (const task_t *task) {
@@ -199,6 +266,17 @@ void release_slot (const task_t *task) {
 
   /* TODO: Release the slot, think about the actions you need to perform:
    *       - Do you need to notify any waiting task?
+   *         - The simplest algorithm would be to notify ALL tasks. The checks
+   *         in the while loop will make sure the right thread can do its work.
+   *         This can ofc be optimized by doing checks again on what next task 
+   *         to execute.
+   *        
    *       - Do you need to increment/decrement any counter?
+   *         - Yes we need to decrement the bus riders
    */
+  
+    lock_acquire(&bus_lock);
+    bus_riders--;
+    cond_broadcast(&can_send, &bus_lock);
+    lock_release(&bus_lock);
 }
